@@ -1,8 +1,7 @@
-import { getDocument, updateDocument } from "../services/document.service.js";
 import { logger } from "../utils/logger.js";
 import { validate } from "../utils/validate.js";
-import { editDocumentSchema } from "../validators/document.validator.js";
 import { socketAsyncHandler } from "../utils/socketAsyncHandler.js";
+import { applyUpdate, getDocument} from "../services/document.service.js";
 
 const activeUsers = new Map(); // socketId -> user
 
@@ -28,16 +27,16 @@ export const registerDocumentSocket = (io) => {
 
         socket.join("document_room");
 
-        // send doc
-        const doc = await getDocument();
+        // 🔥 send Yjs state instead of plain doc
+        const state = getDocument();
 
         this.emit("document_state", {
           success: true,
           type: "DOCUMENT_STATE",
-          data: doc,
+          data: state,
         });
 
-        // broadcast presence
+        // 🔹 presence broadcast (unchanged)
         io.to("document_room").emit(
           "presence_update",
           Array.from(activeUsers.values())
@@ -50,63 +49,35 @@ export const registerDocumentSocket = (io) => {
       })
     );
 
-    // 🔹 EDIT DOCUMENT
+    // 🔹 YJS UPDATE (REPLACES edit_document)
     socket.on(
-      "edit_document",
-      socketAsyncHandler(async function (data) {
-        if (!data) {
+      "yjs_update",
+      socketAsyncHandler(async function (update) {
+        if (!update) {
           return this.emit("socket_error", {
             success: false,
             type: "VALIDATION_ERROR",
-            message: "No payload provided",
+            message: "No update provided",
           });
         }
 
-        const validation = validate(editDocumentSchema, data);
+        // 🔥 apply CRDT update (NO conflicts anymore)
+        await applyUpdate(update, this.id);
 
-        if (!validation.success) {
-          logger.warn(
-            { socketId: this.id, errors: validation.errors },
-            "Validation failed"
-          );
-
-          return this.emit("socket_error", {
-            success: false,
-            type: "VALIDATION_ERROR",
-            message: "Invalid input",
-            errors: validation.errors,
-          });
-        }
-
-        const { content, version } = validation.data;
-
-        const result = await updateDocument(content, version, this.id);
-
-        if (result.noop) {
-          return this.emit("document_noop", {
-            success: true,
-            type: "DOCUMENT_NOOP",
-            data: result.data,
-          });
-        }
-
-        if (result.conflict) {
-          return this.emit("document_conflict", {
-            success: false,
-            type: "DOCUMENT_CONFLICT",
-            data: result.data,
-          });
-        }
-
-        io.to("document_room").emit("document_updated", {
-          success: true,
-          type: "DOCUMENT_UPDATE",
-          data: result.data,
+        // 🔥 broadcast ONLY delta (not full doc)
+        socket.to("document_room").emit("yjs_update", {
+          update,
+          user: currentUser,
         });
+
+        logger.info(
+          { socketId: this.id, user: currentUser?.name },
+          "Yjs update applied"
+        );
       })
     );
 
-    // 🔹 TYPING EVENT
+    // 🔹 TYPING EVENT (UNCHANGED)
     socket.on("typing", () => {
       if (!currentUser) return;
 
@@ -115,7 +86,17 @@ export const registerDocumentSocket = (io) => {
       });
     });
 
-    // 🔹 DISCONNECT
+    // 🔹 CURSOR (NEW — REAL FEATURE)
+    socket.on("cursor_update", (cursor) => {
+      if (!currentUser) return;
+
+      socket.to("document_room").emit("cursor_update", {
+        user: currentUser,
+        cursor,
+      });
+    });
+
+    // 🔹 DISCONNECT (UNCHANGED)
     socket.on("disconnect", () => {
       if (currentUser) {
         activeUsers.delete(socket.id);

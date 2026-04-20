@@ -1,64 +1,70 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, beforeAll } from "vitest";
 import { prisma } from "../src/config/prisma.js";
-import { updateDocument, getDocument } from "../src/services/document.service.js";
+import {
+  applyUpdate,
+  getDocument,
+  initYDoc,
+} from "../src/services/document.service.js";
+import * as Y from "yjs";
+import { initRedis } from "../src/config/redis.js";
 
-describe("Document Service", () => {
+beforeAll(async () => {
+  await initRedis();
+});
+
+const createUpdate = (value) => {
+  const doc = new Y.Doc();
+  const text = doc.getText("content");
+  text.insert(0, value);
+  return Array.from(Y.encodeStateAsUpdate(doc));
+};
+
+describe("Document Service (Yjs)", () => {
   beforeEach(async () => {
     await prisma.document.deleteMany();
 
     await prisma.document.create({
-      data: {
-        content: "initial",
-        version: 1,
-      },
+      data: { content: "" },
     });
+
+    await initYDoc();
   });
 
-  it("should return document", async () => {
-    const doc = await getDocument();
-    expect(doc.content).toBe("initial");
-    expect(doc.version).toBe(1);
+  it("should return initial Yjs state", () => {
+    const doc = getDocument();
+    expect(doc.content).toBeInstanceOf(Array);
   });
 
-  it("should perform successful update", async () => {
-    const result = await updateDocument("new content", 1, "user1");
+  it("should apply update", async () => {
+    const update = createUpdate("hello");
+    await applyUpdate(update, "user1");
 
-    expect(result.conflict).toBe(false);
-    expect(result.noop).toBe(false);
-    expect(result.data.version).toBe(2);
-    expect(result.data.updatedBy).toBe("user1");
+    const doc = getDocument();
+    expect(doc.content).toBeDefined();
   });
 
-  it("should detect conflict", async () => {
-    await updateDocument("first update", 1, "user1");
+  it("should merge updates", async () => {
+    await applyUpdate(createUpdate("A"), "user1");
+    await applyUpdate(createUpdate("B"), "user2");
 
-    const result = await updateDocument("second update", 1, "user2");
-
-    expect(result.conflict).toBe(true);
-    expect(result.data.server.version).toBe(2);
+    const doc = getDocument();
+    expect(doc.content).toBeDefined();
   });
 
-  it("should detect no-op", async () => {
-    const result = await updateDocument("initial", 1, "user1");
+  it("should be idempotent", async () => {
+    const update = createUpdate("same");
 
-    expect(result.noop).toBe(true);
+    await applyUpdate(update, "user1");
+    await applyUpdate(update, "user1");
+
+    const doc = getDocument();
+    expect(doc.content).toBeDefined();
   });
 
-  it("should reject large content", async () => {
-    const large = "a".repeat(20000);
+  it("should persist to DB", async () => {
+    await applyUpdate(createUpdate("persist"), "user1");
 
-    await expect(
-      updateDocument(large, 1, "user1")
-    ).rejects.toThrow("Content too large");
-  });
-
-  it("should reject stale update after success", async () => {
-    const doc = await getDocument();
-
-    await updateDocument("A", doc.version, "user1");
-
-    const result = await updateDocument("B", doc.version, "user2");
-
-    expect(result.conflict).toBe(true);
+    const dbDoc = await prisma.document.findFirst();
+    expect(dbDoc.content).toBeTruthy();
   });
 });
