@@ -5,172 +5,108 @@ import { Server } from "socket.io";
 import app from "../src/app.js";
 import { registerDocumentSocket } from "../src/sockets/document.socket.js";
 import { prisma } from "../src/config/prisma.js";
+import { initYDoc } from "../src/services/document.service.js";
+import { initRedis } from "../src/config/redis.js";
+import * as Y from "yjs";
 
 let io, server, client1, client2;
 
-describe("Socket Integration", () => {
-  beforeAll(async () => {
-    server = http.createServer(app);
-    io = new Server(server);
+const createUpdate = (value) => {
+  const doc = new Y.Doc();
+  const text = doc.getText("content");
+  text.insert(0, value);
+  return Array.from(Y.encodeStateAsUpdate(doc));
+};
 
-    registerDocumentSocket(io);
+beforeAll(async () => {
+  await initRedis();
 
-    await new Promise((res) => server.listen(4000, res));
+  server = http.createServer(app);
+  io = new Server(server);
 
-    client1 = new Client("http://localhost:4000");
-    client2 = new Client("http://localhost:4000");
+  registerDocumentSocket(io);
+
+  await new Promise((res) => server.listen(4000, res));
+
+  client1 = new Client("http://localhost:4000");
+  client2 = new Client("http://localhost:4000");
+});
+
+beforeEach(async () => {
+  await prisma.document.deleteMany();
+
+  await prisma.document.create({
+    data: { content: "" },
   });
 
-  beforeEach(async () => {
-    // 🔥 isolate DB BEFORE EACH TEST
-    await prisma.document.deleteMany();
+  await initYDoc();
 
-    await prisma.document.create({
-      data: {
-        content: "initial",
-        version: 1,
-      },
-    });
+  client1.removeAllListeners();
+  client2.removeAllListeners();
+});
 
-    // 🔥 remove ALL listeners (critical)
-    client1.removeAllListeners();
-    client2.removeAllListeners();
-  });
+afterAll(() => {
+  client1.close();
+  client2.close();
+  server.close();
+});
 
-  afterAll(() => {
-    client1.close();
-    client2.close();
-    server.close();
-  });
-
-  it("should handle concurrent edits without breaking invariants", async () => {
-    const results = [];
-
+describe("Socket Integration (Yjs)", () => {
+  it("should sync updates between clients", async () => {
     await new Promise((resolve, reject) => {
-      let ready = 0;
-      let version1, version2;
-      let finished = false;
+      let received = false;
 
-      const finish = async () => {
-        if (finished) return;
-        finished = true;
-
-        try {
-          const updates = results.filter(r => r === "updated").length;
-          const conflicts = results.filter(r => r === "conflict").length;
-
-          // ✅ VALID SYSTEM INVARIANTS (NOT FAKE ASSUMPTIONS)
-
-          // at least one outcome must exist
-          expect(results.length).toBeGreaterThanOrEqual(1);
-
-          // at most one update allowed
-          expect(updates).toBeLessThanOrEqual(1);
-
-          // total events bounded
-          expect(updates + conflicts).toBeGreaterThanOrEqual(1);
-          expect(updates + conflicts).toBeLessThanOrEqual(2);
-
-          // ✅ DB STATE VALIDATION
-          const doc = await prisma.document.findFirst();
-
-          expect(doc).not.toBeNull();
-
-          if (doc) {
-            expect([1, 2]).toContain(doc.version);
-            expect(["A", "B", "initial"]).toContain(doc.content);
-          }
-
-          resolve();
-        } catch (err) {
-          reject(err);
-        }
-      };
-
-      const tryTrigger = () => {
-        if (ready === 2) {
-          client1.emit("edit_document", {
-            content: "A",
-            version: version1,
-          });
-
-          client2.emit("edit_document", {
-            content: "B",
-            version: version2,
-          });
-        }
-      };
-
-      // CLIENT 1
-      client1.on("document_state", (data) => {
-        version1 = data.data.version;
-        ready++;
-        tryTrigger();
+      client2.on("yjs_update", (data) => {
+        received = true;
+        expect(data.update).toBeDefined();
+        resolve();
       });
 
-      client1.on("document_updated", () => {
-        results.push("updated");
-        finish();
-      });
+      client1.emit("join_document", { id: "user1", name: "User 1" });
+      client2.emit("join_document", { id: "user2", name: "User 2" });
 
-      client1.on("document_conflict", () => {
-        results.push("conflict");
-        finish();
-      });
-
-      client1.on("socket_error", (err) => {
-        reject(new Error("Client1 error: " + err.message));
-      });
-
-      // CLIENT 2
-      client2.on("document_state", (data) => {
-        version2 = data.data.version;
-        ready++;
-        tryTrigger();
-      });
-
-      client2.on("document_updated", () => {
-        results.push("updated");
-        finish();
-      });
-
-      client2.on("document_conflict", () => {
-        results.push("conflict");
-        finish();
-      });
-
-      client2.on("socket_error", (err) => {
-        reject(new Error("Client2 error: " + err.message));
-      });
-
-      // emit AFTER listeners
-      client1.emit("join_document");
-      client2.emit("join_document");
-
-      // hard timeout fallback
       setTimeout(() => {
-        if (!finished) {
-          reject(new Error("Test timeout - no events received"));
-        }
-      }, 4000);
+        client1.emit("yjs_update", createUpdate("hello"));
+      }, 500);
+
+      setTimeout(() => {
+        if (!received) reject(new Error("No update received"));
+      }, 3000);
     });
   });
 
-  it("should reject invalid payload via validation", async () => {
-    await new Promise((resolve, reject) => {
-      client1.on("socket_error", (err) => {
-        try {
-          expect(err.type).toBe("VALIDATION_ERROR");
-          resolve();
-        } catch (e) {
-          reject(e);
-        }
+  it("should send document state", async () => {
+    await new Promise((resolve) => {
+      client1.on("document_state", (data) => {
+        expect(data.data).toBeDefined();
+        resolve();
       });
 
-      client1.emit("edit_document", {
-        content: 123,
-        version: "invalid",
+      client1.emit("join_document", { id: "user1", name: "User 1" });
+    });
+  });
+
+  it("should track presence", async () => {
+    await new Promise((resolve) => {
+      client1.on("presence_update", (users) => {
+        expect(users.length).toBeGreaterThanOrEqual(1);
+        resolve();
       });
+
+      client1.emit("join_document", { id: "user1", name: "User 1" });
+    });
+  });
+
+  it("should emit typing", async () => {
+    await new Promise((resolve) => {
+      client2.on("user_typing", () => resolve());
+
+      client1.emit("join_document", { id: "user1", name: "User 1" });
+      client2.emit("join_document", { id: "user2", name: "User 2" });
+
+      setTimeout(() => {
+        client1.emit("typing");
+      }, 500);
     });
   });
 });

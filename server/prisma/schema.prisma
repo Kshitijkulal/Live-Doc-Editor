@@ -10,7 +10,5 @@ datasource db {
 model Document {
   id        String   @id @default(auto()) @map("_id") @db.ObjectId
   content   String
-  version   Int
-  updatedAt DateTime @updatedAt
-  updatedBy String? 
+  updatedBy String?
 }

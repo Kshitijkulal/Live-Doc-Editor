@@ -9,7 +9,6 @@ async function main() {
     await prisma.document.create({
       data: {
         content: "",
-        version: 0
       }
     });
     console.log("Seeded document");

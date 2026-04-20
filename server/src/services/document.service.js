@@ -1,92 +1,104 @@
 import { prisma } from "../config/prisma.js";
 import { logger } from "../utils/logger.js";
 import { AppError } from "../utils/AppError.js";
+import * as Y from "yjs";
+import { getRedisPub, getRedisSub } from "../config/redis.js";
 
-export const getDocument = async () => {
+let ydoc;
+let yText;
+let documentId;
+
+const CHANNEL = "yjs_updates";
+const INSTANCE_ID = process.pid;
+
+let redisSubscribed = false;
+
+// 🔹 INIT
+export const initYDoc = async () => {
+  ydoc = new Y.Doc();
+  yText = ydoc.getText("content");
+
   const doc = await prisma.document.findFirst();
 
   if (!doc) {
-    logger.error("Document invariant violated: no base document found");
     throw new AppError("Document not initialized", 500);
   }
 
-  return doc;
+  documentId = doc.id;
+
+  // Load state
+  if (doc.content) {
+    try {
+      Y.applyUpdate(ydoc, new Uint8Array(JSON.parse(doc.content)));
+    } catch {
+      yText.insert(0, doc.content);
+    }
+  }
+
+  const sub = getRedisSub();
+
+  if (!redisSubscribed) {
+    await sub.subscribe(CHANNEL);
+
+    sub.on("message", (_, message) => {
+      try {
+        const { update, instanceId } = JSON.parse(message);
+
+        if (instanceId === INSTANCE_ID) return;
+
+        Y.applyUpdate(ydoc, new Uint8Array(update));
+      } catch (err) {
+        logger.error(err, "Redis message failed");
+      }
+    });
+
+    redisSubscribed = true;
+  }
+
+  logger.info({ documentId }, "Yjs initialized with Redis");
 };
 
-export const updateDocument = async (content, incomingVersion, updatedBy) => {
-  // 🚫 basic guard (cheap check first)
-  if (content.length > 10000) {
-    throw new AppError("Content too large", 400);
+// 🔹 GET
+export const getDocument = () => {
+  return {
+    content: Array.from(Y.encodeStateAsUpdate(ydoc)),
+  };
+};
+
+// 🔹 APPLY UPDATE
+export const applyUpdate = async (update, updatedBy) => {
+  if (!update) {
+    throw new AppError("Invalid update payload", 400);
   }
 
-  const doc = await prisma.document.findFirst();
+  const uint8 = new Uint8Array(update);
 
-  if (!doc) {
-    logger.error("Document invariant violated during update");
-    throw new AppError("Document not found", 500);
-  }
+  Y.applyUpdate(ydoc, uint8);
 
-  // 🚫 NO-OP
-  if (doc.content === content) {
-    return {
-      conflict: false,
-      noop: true,
-      data: doc,
-    };
-  }
+  const pub = getRedisPub();
 
-  // ⚡ optimistic concurrency
-  const result = await prisma.document.updateMany({
-    where: {
-      id: doc.id,
-      version: incomingVersion,
-    },
+  await pub.publish(
+    CHANNEL,
+    JSON.stringify({
+      update,
+      instanceId: INSTANCE_ID,
+    })
+  );
+
+  await persist(updatedBy);
+
+  logger.info({ updatedBy }, "Yjs update applied");
+};
+
+// 🔹 PERSIST
+const persist = async (updatedBy) => {
+  const snapshot = Y.encodeStateAsUpdate(ydoc);
+
+  await prisma.document.update({
+    where: { id: documentId },
     data: {
-      content,
-      version: incomingVersion + 1,
+      content: JSON.stringify(Array.from(snapshot)),
       updatedBy,
     },
   });
-
-  // ❌ CONFLICT
-  if (result.count === 0) {
-    logger.warn(
-      {
-        incomingVersion,
-        currentVersion: doc.version,
-      },
-      "Version conflict detected"
-    );
-
-    return {
-      conflict: true,
-      data: {
-        server: doc,
-        attempted: content,
-      },
-    };
-  }
-
-  // ✅ SUCCESS (reconstruct state)
-  const updatedDoc = {
-    ...doc,
-    content,
-    version: incomingVersion + 1,
-    updatedAt: new Date(),
-    updatedBy,
-  };
-
-  logger.info(
-    {
-      version: updatedDoc.version,
-      updatedBy,
-    },
-    "Document updated successfully"
-  );
-
-  return {
-    conflict: false,
-    noop: false,
-    data: updatedDoc,
-  };
 };
