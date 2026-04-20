@@ -1,0 +1,37 @@
+node_modules
+# Keep environment variables out of version control
+.env
+
+/src/generated/prisma
+
+# Dependencies
+node_modules/
+
+# Logs
+*.log
+
+# Env (CRITICAL — don't mess this up)
+.env
+.env.*
+
+# Build
+dist/
+build/
+
+# Prisma
+prisma/generated/
+*.db
+
+# Redis
+dump.rdb
+
+# Temp
+tmp/
+temp/
+
+# TypeScript
+*.tsbuildinfo
+
+# IDE
+.vscode/
+.idea/
