@@ -10,14 +10,14 @@ const PORT = 8080;
 
 const server = http.createServer(app);
 
-// attach socket server
+// socket.io setup - cors is wide open for dev, will lock this down later
 const io = new Server(server, {
   cors: {
     origin: "*",
   },
 });
 
-// initialise dependencies, then register socket handlers
+// redis first, then ydoc, then sockets. order matters here.
 initRedis()
   .then(() => initYDoc())
   .then(() => {

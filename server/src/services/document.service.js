@@ -13,8 +13,36 @@ const INSTANCE_ID = process.pid;
 
 let redisSubscribed = false;
 
-// 🔹 INIT
+let persistTimeout = null;
+let lastUpdatedBy = null;
+
+// debounced persist - every keystroke doesn't need a db write.
+// 2s feels right, fast enough that you don't lose much on a crash,
+// slow enough that mongo isn't getting hammered on every character.
+const schedulePersist = (updatedBy) => {
+  lastUpdatedBy = updatedBy;
+
+  clearTimeout(persistTimeout);
+
+  persistTimeout = setTimeout(async () => {
+    const snapshot = Y.encodeStateAsUpdate(ydoc);
+
+    await prisma.document.update({
+      where: { id: documentId },
+      data: {
+        content: JSON.stringify(Array.from(snapshot)),
+        updatedBy: lastUpdatedBy,
+      },
+    });
+
+    logger.info("Persisted debounced snapshot");
+  }, 2000);
+};
+
+// loads the doc from mongo and hydrates the in-memory Yjs doc.
+// called once on server boot before anything else touches the doc.
 export const initYDoc = async () => {
+  if (ydoc) return;
   ydoc = new Y.Doc();
   yText = ydoc.getText("content");
 
@@ -26,7 +54,9 @@ export const initYDoc = async () => {
 
   documentId = doc.id;
 
-  // Load state
+  // try to restore from the binary Yjs snapshot first.
+  // if it's not valid Yjs data (e.g. plain text from an old seed),
+  // fall back to just inserting the raw string into the Y.Text.
   if (doc.content) {
     try {
       Y.applyUpdate(ydoc, new Uint8Array(JSON.parse(doc.content)));
@@ -37,6 +67,8 @@ export const initYDoc = async () => {
 
   const sub = getRedisSub();
 
+  // subscribe to cross-instance yjs updates via redis pub/sub.
+  // the instanceId check prevents us from applying our own updates twice.
   if (!redisSubscribed) {
     await sub.subscribe(CHANNEL);
 
@@ -58,14 +90,17 @@ export const initYDoc = async () => {
   logger.info({ documentId }, "Yjs initialized with Redis");
 };
 
-// 🔹 GET
+// returns full Yjs state as a plain array (JSON-serializable).
+// this gets sent to new clients so they can hydrate their local doc.
 export const getDocument = () => {
   return {
     content: Array.from(Y.encodeStateAsUpdate(ydoc)),
   };
 };
 
-// 🔹 APPLY UPDATE
+// apply a CRDT update from a client, broadcast it to other instances
+// via redis, and schedule a persist. Yjs handles merge conflicts
+// internally so we don't need to worry about that here.
 export const applyUpdate = async (update, updatedBy) => {
   if (!update) {
     throw new AppError("Invalid update payload", 400);
@@ -85,12 +120,13 @@ export const applyUpdate = async (update, updatedBy) => {
     })
   );
 
-  await persist(updatedBy);
+  schedulePersist(updatedBy);
 
   logger.info({ updatedBy }, "Yjs update applied");
 };
 
-// 🔹 PERSIST
+// direct persist, not debounced. not currently called anywhere but
+// keeping it around in case we need a force-save on shutdown or something.
 const persist = async (updatedBy) => {
   const snapshot = Y.encodeStateAsUpdate(ydoc);
 

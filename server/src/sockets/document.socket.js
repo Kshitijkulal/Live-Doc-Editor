@@ -3,7 +3,7 @@ import { validate } from "../utils/validate.js";
 import { socketAsyncHandler } from "../utils/socketAsyncHandler.js";
 import { applyUpdate, getDocument} from "../services/document.service.js";
 
-const activeUsers = new Map(); // socketId -> user
+const activeUsers = new Map(); // socketId -> user info
 
 export const registerDocumentSocket = (io) => {
   io.on("connection", (socket) => {
@@ -11,7 +11,8 @@ export const registerDocumentSocket = (io) => {
 
     let currentUser = null;
 
-    // 🔹 JOIN DOCUMENT (WITH USER)
+    // client sends their user info when they want to join.
+    // we send back the full Yjs state so they can hydrate their editor.
     socket.on(
       "join_document",
       socketAsyncHandler(async function (user) {
@@ -27,7 +28,7 @@ export const registerDocumentSocket = (io) => {
 
         socket.join("document_room");
 
-        // 🔥 send Yjs state instead of plain doc
+        // send the full Yjs binary state - client applies this to their local doc
         const state = getDocument();
 
         this.emit("document_state", {
@@ -36,7 +37,7 @@ export const registerDocumentSocket = (io) => {
           data: state,
         });
 
-        // 🔹 presence broadcast (unchanged)
+        // let everyone know who's online
         io.to("document_room").emit(
           "presence_update",
           Array.from(activeUsers.values())
@@ -49,7 +50,10 @@ export const registerDocumentSocket = (io) => {
       })
     );
 
-    // 🔹 YJS UPDATE (REPLACES edit_document)
+    // incoming Yjs CRDT delta from a client.
+    // we apply it server-side (for persistence) and fan it out to peers.
+    // no conflict resolution needed - Yjs handles that for us, which is
+    // honestly the whole reason we went with CRDTs in the first place.
     socket.on(
       "yjs_update",
       socketAsyncHandler(async function (update) {
@@ -61,10 +65,9 @@ export const registerDocumentSocket = (io) => {
           });
         }
 
-        // 🔥 apply CRDT update (NO conflicts anymore)
         await applyUpdate(update, this.id);
 
-        // 🔥 broadcast ONLY delta (not full doc)
+        // only broadcast the delta, not the full doc
         socket.to("document_room").emit("yjs_update", {
           update,
           user: currentUser,
@@ -77,7 +80,7 @@ export const registerDocumentSocket = (io) => {
       })
     );
 
-    // 🔹 TYPING EVENT (UNCHANGED)
+    // just a relay - client says "i'm typing", we tell everyone else
     socket.on("typing", () => {
       if (!currentUser) return;
 
@@ -86,7 +89,8 @@ export const registerDocumentSocket = (io) => {
       });
     });
 
-    // 🔹 CURSOR (NEW — REAL FEATURE)
+    // cursor positions - forwarding to peers for the cursor overlay.
+    // not doing anything fancy with this yet but the plumbing is here.
     socket.on("cursor_update", (cursor) => {
       if (!currentUser) return;
 
@@ -96,7 +100,6 @@ export const registerDocumentSocket = (io) => {
       });
     });
 
-    // 🔹 DISCONNECT (UNCHANGED)
     socket.on("disconnect", () => {
       if (currentUser) {
         activeUsers.delete(socket.id);
