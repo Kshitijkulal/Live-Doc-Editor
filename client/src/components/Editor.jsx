@@ -5,7 +5,9 @@ import { Highlight } from "@tiptap/extension-highlight";
 import { TextStyle, Color } from "@tiptap/extension-text-style";
 import { Collaboration } from "@tiptap/extension-collaboration";
 
-// ─── SVG Icons ──────────────────────────────────────────
+// toolbar icons - inline SVGs because importing an icon library
+// for 12 icons felt like overkill
+
 const BoldIcon = () => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" xmlns="http://www.w3.org/2000/svg">
     <path d="M6 4h8a4 4 0 0 1 4 4 4 4 0 0 1-4 4H6z" />
@@ -103,13 +105,11 @@ const RedoIcon = () => (
   </svg>
 );
 
-// ─── Toolbar ────────────────────────────────────────────
 function Toolbar({ editor }) {
   if (!editor) return null;
 
   return (
     <div className="editor-toolbar" role="toolbar" aria-label="Text formatting">
-      {/* History */}
       <div className="toolbar-group">
         <button
           id="toolbar-undo"
@@ -131,7 +131,6 @@ function Toolbar({ editor }) {
         </button>
       </div>
 
-      {/* Headings */}
       <div className="toolbar-group">
         <button
           id="toolbar-h1"
@@ -159,7 +158,6 @@ function Toolbar({ editor }) {
         </button>
       </div>
 
-      {/* Inline formatting */}
       <div className="toolbar-group">
         <button
           id="toolbar-bold"
@@ -211,7 +209,6 @@ function Toolbar({ editor }) {
         </button>
       </div>
 
-      {/* Color */}
       <div className="toolbar-group">
         <label title="Text Color" style={{ display: "flex", alignItems: "center", cursor: "pointer" }}>
           <input
@@ -224,7 +221,6 @@ function Toolbar({ editor }) {
         </label>
       </div>
 
-      {/* Block elements */}
       <div className="toolbar-group">
         <button
           id="toolbar-blockquote"
@@ -255,7 +251,6 @@ function Toolbar({ editor }) {
   );
 }
 
-// ─── Editor ─────────────────────────────────────────────
 export default function Editor({
   ydoc,
   user,
@@ -267,8 +262,8 @@ export default function Editor({
   const editor = useEditor({
     extensions: [
       StarterKit.configure({
-        // Disable built-in undo/redo — Collaboration extension
-        // replaces it with Yjs-backed history.
+        // collaboration extension handles its own undo/redo via Yjs,
+        // so we disable the built-in one to avoid conflicts
         undoRedo: false,
       }),
       Highlight.configure({ multicolor: true }),
@@ -283,14 +278,12 @@ export default function Editor({
         spellcheck: "true",
       },
     },
-    // Fires on every content change (local OR remote via Yjs)
     onUpdate: ({ editor }) => {
       const text = editor.getText();
       const wordCount = text.trim() ? text.trim().split(/\s+/).length : 0;
       if (onWordCountChange) onWordCountChange(wordCount);
       if (onUpdate) onUpdate();
     },
-    // Fires whenever selection/cursor moves
     onSelectionUpdate: ({ editor }) => {
       if (!onCursorChange) return;
       const { from, to } = editor.state.selection;
@@ -298,14 +291,13 @@ export default function Editor({
     },
   });
 
-  // Hook into ydoc to detect when a LOCAL update is flushed.
-  // This is the signal that the update has been emitted to the
-  // server — fire onYjsSaved so the status bar reflects it.
+  // listen for local ydoc updates to keep the "saved" status in sync.
+  // we only care about local changes here (not remote applies),
+  // since those are the ones we're actually persisting.
   useEffect(() => {
     if (!ydoc || !onYjsSaved) return;
 
     const handler = (_update, origin) => {
-      // Only fire for local changes (not remote applies)
       if (origin !== "remote") {
         onYjsSaved();
       }

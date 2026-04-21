@@ -12,10 +12,10 @@ app.use(express.urlencoded({ extended: true }));
 app.use(helmet());
 app.use(httpLogger);
 
-// API routes
+
 app.use("/api", documentRoutes);
 
-// health check
+// sanity check endpoint - useful for uptime monitors
 app.get("/", (req, res) => {
   res.send("API running");
 });

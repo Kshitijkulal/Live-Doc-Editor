@@ -8,13 +8,17 @@ import PresenceBar from "./components/PresenceBar";
 
 import "./styles.css";
 
-// ─── Colour palette for new users ───────────────────────
+// random color assigned to each new user so we can tell them apart
 const PALETTE = [
-  "#6c63ff", "#a78bfa", "#34d399",
-  "#fbbf24", "#f472b6", "#38bdf8", "#fb7185",
+  "#6c63ff",
+  "#a78bfa",
+  "#34d399",
+  "#fbbf24",
+  "#f472b6",
+  "#38bdf8",
+  "#fb7185",
 ];
 
-// ─── Toast notification ──────────────────────────────────
 function Toast({ toasts }) {
   return (
     <div className="toast-stack" aria-live="assertive">
@@ -28,7 +32,6 @@ function Toast({ toasts }) {
   );
 }
 
-// ─── Name Modal ──────────────────────────────────────────
 function NameModal({ onSubmit }) {
   const [name, setName] = useState("");
 
@@ -69,9 +72,9 @@ function NameModal({ onSubmit }) {
   );
 }
 
-// ─── App ─────────────────────────────────────────────────
 function App() {
-  // Use state for ydoc so Editor re-renders when it's ready
+  // ydoc in state so Editor re-mounts when we swap it (shouldn't happen, but just in case)
+  const [isLoaded, setIsLoaded] = useState(false);
   const [ydoc, setYdoc] = useState(null);
   const [user, setUser] = useState(null);
   const [showModal, setShowModal] = useState(false);
@@ -86,23 +89,24 @@ function App() {
 
   const [toasts, setToasts] = useState([]);
 
-  // Refs
   const statusTimerRef = useRef(null);
-  const typingTimersRef = useRef({}); // userId → timeout id
+  const typingTimersRef = useRef({}); // per-user timeout ids for the typing indicator
 
-  // ── Toast helper ────────────────────────────────────────
   const pushToast = useCallback((message, type = "error") => {
     const id = Date.now();
     setToasts((prev) => [...prev, { id, message, type }]);
-    setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 4000);
+    setTimeout(
+      () => setToasts((prev) => prev.filter((t) => t.id !== id)),
+      4000,
+    );
   }, []);
 
-  // ── Init Ydoc once on mount ─────────────────────────────
+  // create the Yjs doc once and try to restore user from localStorage.
+  // if no saved user, show the name modal.
   useEffect(() => {
     const doc = new Y.Doc();
     setYdoc(doc);
 
-    // Resolve saved user
     let saved = null;
     try {
       saved = JSON.parse(localStorage.getItem("user"));
@@ -117,7 +121,7 @@ function App() {
     return () => doc.destroy();
   }, []);
 
-  // ── Socket connection status ────────────────────────────
+  // track connection status for the UI indicator
   useEffect(() => {
     const onConnect = () => setConnected(true);
     const onDisconnect = () => {
@@ -136,26 +140,30 @@ function App() {
     };
   }, []);
 
-  // ── Wire up all socket events once user + ydoc are ready
+  // main socket wiring - only runs once we have both user and ydoc.
+  // everything in here is the core collaboration loop.
   useEffect(() => {
     if (!user || !ydoc) return;
 
-    // ── Join the document room ────────────────────────────
-    socket.emit("join_document", user);
-
-    // ── document_state: load initial persisted Yjs state ──
-    // Server sends: { success, type, data: { content: number[] } }
+    // server responds with the full Yjs state from the DB.
+    // we apply it to our local doc so the editor shows existing content.
     const onDocumentState = (res) => {
-      if (!res?.data?.content) return; // empty / first-time doc
-      try {
-        Y.applyUpdate(ydoc, new Uint8Array(res.data.content), "remote");
-      } catch (err) {
-        console.warn("[yjs] Failed to apply initial document state:", err);
+      const update = res?.data?.content;
+
+      if (update) {
+        try {
+          Y.applyUpdate(ydoc, new Uint8Array(update), "remote");
+        } catch (err) {
+          console.warn("[yjs] Failed to apply initial document state:", err);
+        }
       }
+
+      // don't render the editor until we have the initial state,
+      // otherwise tiptap initializes with empty content and it flickers
+      setIsLoaded(true);
     };
 
-    // ── yjs_update: remote peer made a change ─────────────
-    // Server sends: { update: number[], user: User }
+    // incoming delta from another user's edits
     const onYjsUpdate = ({ update }) => {
       if (!update) return;
       try {
@@ -165,24 +173,21 @@ function App() {
       }
     };
 
-    // ── presence_update: user list changed ────────────────
-    // Server sends: User[]
     const onPresenceUpdate = (userList) => {
       setUsers(Array.isArray(userList) ? userList : []);
     };
 
-    // ── user_typing: another user is typing ───────────────
-    // Server sends: { user: User }
     const onUserTyping = ({ user: typingUser }) => {
       if (!typingUser?.id) return;
 
-      // Add to typing list (deduplicated)
+      // deduplicate - don't add the same user twice
       setTypingUsers((prev) => {
         const exists = prev.some((u) => u.id === typingUser.id);
         return exists ? prev : [...prev, typingUser];
       });
 
-      // Auto-clear after 2 s of silence
+      // auto-remove after 2s of silence. if they keep typing,
+      // this timeout gets reset so the indicator stays visible.
       clearTimeout(typingTimersRef.current[typingUser.id]);
       typingTimersRef.current[typingUser.id] = setTimeout(() => {
         setTypingUsers((prev) => prev.filter((u) => u.id !== typingUser.id));
@@ -190,18 +195,19 @@ function App() {
       }, 2000);
     };
 
-    // ── socket_error: server sent an error ────────────────
-    // Server sends: { success, type, message }
     const onSocketError = ({ message }) => {
       console.error("[socket] Server error:", message);
       pushToast(message || "A server error occurred.");
     };
 
-    // ── cursor_update: another user moved their cursor ─────
-    // Server sends: { user: User, cursor: { start, end } }
-    // (Informational only – stored for future cursor overlay)
+    // cursor overlay data from other users. not rendering it yet
+    // but receiving it so we can add cursor highlights later.
     const onCursorUpdate = () => {};
 
+    // IMPORTANT: register listeners BEFORE emitting join_document.
+    // learned this the hard way - if the server responds fast enough,
+    // the document_state event arrives before the handler is attached
+    // and the initial content just... disappears. fun times.
     socket.on("document_state", onDocumentState);
     socket.on("yjs_update", onYjsUpdate);
     socket.on("presence_update", onPresenceUpdate);
@@ -209,12 +215,21 @@ function App() {
     socket.on("socket_error", onSocketError);
     socket.on("cursor_update", onCursorUpdate);
 
-    // ── Broadcast local Yjs changes to server ─────────────
-    // Tiptap's Collaboration extension applies local edits to ydoc.
-    // Origin is NOT "remote", so the guard below only lets local
-    // changes through and prevents re-broadcasting received updates.
+    // now it's safe to join
+    socket.emit("join_document", user);
+
+    // if the socket reconnects (server restart, network blip, etc),
+    // we need to re-join so the server sends us fresh state
+    const onReconnect = () => {
+      socket.emit("join_document", user);
+    };
+    socket.on("connect", onReconnect);
+
+    // forward local Yjs changes to the server for persistence + broadcast.
+    // the "remote" origin check prevents us from re-emitting updates
+    // that we just received from other peers.
     const onLocalUpdate = (update, origin) => {
-      if (origin === "remote") return; // skip updates we applied ourselves
+      if (origin === "remote") return;
       socket.emit("yjs_update", Array.from(update));
     };
 
@@ -227,11 +242,11 @@ function App() {
       socket.off("user_typing", onUserTyping);
       socket.off("socket_error", onSocketError);
       socket.off("cursor_update", onCursorUpdate);
+      socket.off("connect", onReconnect);
       ydoc.off("update", onLocalUpdate);
     };
   }, [user, ydoc, pushToast]);
 
-  // ── Handle name submission ──────────────────────────────
   const handleNameSubmit = (name) => {
     const newUser = {
       id: crypto.randomUUID(),
@@ -243,12 +258,11 @@ function App() {
     setShowModal(false);
   };
 
-  // ── Called by Editor on every keystroke ─────────────────
+  // debounced status updates - show "typing" immediately,
+  // then flip to "saved" after 1.5s of inactivity
   const handleEditorUpdate = useCallback(() => {
-    // 1. Emit "typing" event so server can broadcast user_typing to peers
     socket.emit("typing");
 
-    // 2. Update local UI status with debounce
     setStatus("typing");
     clearTimeout(statusTimerRef.current);
     statusTimerRef.current = setTimeout(() => {
@@ -257,15 +271,13 @@ function App() {
     }, 1500);
   }, []);
 
-  // ── Called by Editor when Yjs update is confirmed saved ─
-  // (ydoc.on("update") already handles the network emit;
-  //  this callback keeps the UI status indicator in sync)
+  // the actual network emit happens in ydoc.on("update") above,
+  // this just keeps the status bar UI in sync
   const handleYjsSaved = useCallback(() => {
     setLastSaved(new Date());
     setStatus("saved");
   }, []);
 
-  // ── Called by Editor on cursor movement ─────────────────
   const handleCursorChange = useCallback((cursor) => {
     socket.emit("cursor_update", cursor);
   }, []);
@@ -277,10 +289,9 @@ function App() {
       <Toast toasts={toasts} />
 
       <div className="app-shell">
-        {/* ── Header ── */}
         <header className="app-header">
           <div className="header-brand">
-            <div className="brand-icon">✦</div>
+            <div className="brand-icon">0S</div>
             <span className="brand-name">
               Live<span>Doc</span>
             </span>
@@ -288,7 +299,6 @@ function App() {
 
           <PresenceBar users={users} typingUsers={typingUsers} />
 
-          {/* Connection indicator */}
           <div
             className={`conn-badge ${connected ? "conn-badge--on" : "conn-badge--off"}`}
             title={connected ? "Connected to server" : "Disconnected"}
@@ -298,9 +308,8 @@ function App() {
           </div>
         </header>
 
-        {/* ── Editor area ── */}
         <main className="editor-area">
-          {ydoc && user && (
+          {ydoc && user && isLoaded && (
             <Editor
               ydoc={ydoc}
               user={user}
@@ -312,7 +321,6 @@ function App() {
           )}
         </main>
 
-        {/* ── Status bar ── */}
         <StatusBar
           status={status}
           lastSaved={lastSaved}

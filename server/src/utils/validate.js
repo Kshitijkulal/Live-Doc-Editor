@@ -14,7 +14,7 @@ export const validate = (schema, data) => {
   };
 };
 
-// 🔥 Normalize Zod errors into something usable
+// flatten zod's nested error format into something the frontend can actually use
 const formatZodErrors = (error) => {
   const formatted = {};
 
