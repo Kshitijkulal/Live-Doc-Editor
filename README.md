@@ -6,7 +6,7 @@ This started as a straightforward "build a collaborative editor" assessment and 
 
 ## Demo
 
-(https://github.com/user-attachments/assets/300dfb80-7bb0-48bb-9d24-7a32d3dd6f3c)
+https://github.com/user-attachments/assets/300dfb80-7bb0-48bb-9d24-7a32d3dd6f3c
 
 ## Tech Stack
 
