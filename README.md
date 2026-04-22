@@ -105,28 +105,33 @@ The system has four main pieces: a React frontend with Tiptap/Yjs handling the e
 
 ```mermaid
 graph TB
-    subgraph "Client (Browser)"
+    subgraph Client_Browser["Client (Browser)"]
         UI["Tiptap Editor"]
         YDoc["Y.Doc (local CRDT)"]
         SIO_C["Socket.IO Client"]
-        UI <--> YDoc
-        YDoc <--> SIO_C
+        UI --> YDoc
+        YDoc --> UI
+        YDoc --> SIO_C
+        SIO_C --> YDoc
     end
 
-    subgraph "Server (Node.js)"
+    subgraph Server_NodeJS["Server (Node.js)"]
         SIO_S["Socket.IO Server"]
         YDoc_S["Y.Doc (server CRDT)"]
         SVC["Document Service"]
-        SIO_S <--> YDoc_S
-        YDoc_S <--> SVC
+        SIO_S --> YDoc_S
+        YDoc_S --> SIO_S
+        YDoc_S --> SVC
+        SVC --> YDoc_S
     end
 
-    subgraph "Infrastructure"
+    subgraph Infrastructure
         Redis["Redis Pub/Sub"]
         Mongo["MongoDB Atlas"]
     end
 
-    SIO_C <-->|"WebSocket"| SIO_S
+    SIO_C -->|"WebSocket"| SIO_S
+    SIO_S -->|"WebSocket"| SIO_C
     SVC -->|"Publish updates"| Redis
     Redis -->|"Subscribe"| SVC
     SVC -->|"Debounced persist"| Mongo
@@ -214,13 +219,13 @@ CRDTs (Conflict-free Replicated Data Types) solve this at the data structure lev
 
 ```mermaid
 graph LR
-    subgraph "Old: Version-Based"
+    subgraph Old_Approach["Old: Version-Based"]
         A1["Client A: version 5"] -->|"Send full doc"| S1["Server checks version"]
         B1["Client B: version 5"] -->|"Send full doc"| S1
         S1 -->|"Accept A, reject B"| R1["Conflict! B loses edits"]
     end
 
-    subgraph "New: Yjs CRDT"
+    subgraph New_Approach["New: Yjs CRDT"]
         A2["Client A: edit at pos 10"] -->|"Binary delta"| S2["Server merges via Y.applyUpdate"]
         B2["Client B: edit at pos 50"] -->|"Binary delta"| S2
         S2 -->|"Both applied"| R2["No conflict. Both edits preserved."]
