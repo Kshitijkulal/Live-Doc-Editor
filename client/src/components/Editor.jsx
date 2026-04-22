@@ -1,9 +1,11 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import { StarterKit } from "@tiptap/starter-kit";
 import { Highlight } from "@tiptap/extension-highlight";
 import { TextStyle, Color } from "@tiptap/extension-text-style";
 import { Collaboration } from "@tiptap/extension-collaboration";
+import { Plugin, PluginKey } from "@tiptap/pm/state";
+import { Decoration, DecorationSet } from "@tiptap/pm/view";
 
 // toolbar icons - inline SVGs because importing an icon library
 // for 12 icons felt like overkill
@@ -254,11 +256,14 @@ function Toolbar({ editor }) {
 export default function Editor({
   ydoc,
   user,
+  remoteCursors,
   onWordCountChange,
   onUpdate,
   onYjsSaved,
   onCursorChange,
 }) {
+  const cursorsPluginKey = useRef(new PluginKey("remoteCursors")).current;
+
   const editor = useEditor({
     extensions: [
       StarterKit.configure({
@@ -274,7 +279,7 @@ export default function Editor({
     editorProps: {
       attributes: {
         class: "tiptap-editor",
-        "data-placeholder": "Start writing something amazing…",
+        "data-placeholder": "Start writing something amazing\u2026",
         spellcheck: "true",
       },
     },
@@ -290,6 +295,82 @@ export default function Editor({
       onCursorChange({ start: from, end: to });
     },
   });
+
+  useEffect(() => {
+    if (!editor) return;
+
+    const existing = editor.state.plugins.find(
+      (p) => p.spec.key === cursorsPluginKey
+    );
+    if (existing) {
+      editor.view.dispatch(
+        editor.state.tr.setMeta(cursorsPluginKey, remoteCursors)
+      );
+      return;
+    }
+
+    const plugin = new Plugin({
+      key: cursorsPluginKey,
+      state: {
+        init: () => remoteCursors || {},
+        apply: (tr, prev) => {
+          const meta = tr.getMeta(cursorsPluginKey);
+          return meta !== undefined ? meta : prev;
+        },
+      },
+      props: {
+        decorations: (state) => {
+          const cursors = cursorsPluginKey.getState(state);
+          if (!cursors) return DecorationSet.empty;
+
+          const decorations = [];
+          const docSize = state.doc.content.size;
+
+          for (const entry of Object.values(cursors)) {
+            const { user: cursorUser, cursor } = entry;
+            if (!cursor) continue;
+
+            const start = Math.min(cursor.start, docSize);
+            const end = Math.min(cursor.end, docSize);
+            const color = cursorUser.color || "#6c63ff";
+
+            const caretEl = document.createElement("span");
+            caretEl.className = "collaboration-cursor__caret";
+            caretEl.style.borderColor = color;
+
+            const labelEl = document.createElement("span");
+            labelEl.className = "collaboration-cursor__label";
+            labelEl.style.backgroundColor = color;
+            labelEl.textContent = cursorUser.name;
+            caretEl.appendChild(labelEl);
+
+            decorations.push(
+              Decoration.widget(start, caretEl, {
+                side: 1,
+                key: `cursor-${cursorUser.id}`,
+              })
+            );
+
+            if (start !== end) {
+              decorations.push(
+                Decoration.inline(start, end, {
+                  class: "collaboration-cursor__selection",
+                  style: `background: ${color}22;`,
+                })
+              );
+            }
+          }
+
+          return DecorationSet.create(state.doc, decorations);
+        },
+      },
+    });
+
+    const newState = editor.state.reconfigure({
+      plugins: [...editor.state.plugins, plugin],
+    });
+    editor.view.updateState(newState);
+  }, [editor, remoteCursors, cursorsPluginKey]);
 
   // listen for local ydoc updates to keep the "saved" status in sync.
   // we only care about local changes here (not remote applies),

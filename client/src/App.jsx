@@ -86,6 +86,7 @@ function App() {
   const [status, setStatus] = useState("idle");
   const [lastSaved, setLastSaved] = useState(null);
   const [wordCount, setWordCount] = useState(0);
+  const [remoteCursors, setRemoteCursors] = useState({});
 
   const [toasts, setToasts] = useState([]);
 
@@ -128,6 +129,7 @@ function App() {
       setConnected(false);
       setUsers([]);
       setTypingUsers([]);
+      setRemoteCursors({});
       setStatus("idle");
     };
 
@@ -174,7 +176,16 @@ function App() {
     };
 
     const onPresenceUpdate = (userList) => {
-      setUsers(Array.isArray(userList) ? userList : []);
+      const list = Array.isArray(userList) ? userList : [];
+      setUsers(list);
+      const activeIds = new Set(list.map((u) => u.id));
+      setRemoteCursors((prev) => {
+        const next = {};
+        for (const [id, entry] of Object.entries(prev)) {
+          if (activeIds.has(id)) next[id] = entry;
+        }
+        return next;
+      });
     };
 
     const onUserTyping = ({ user: typingUser }) => {
@@ -200,9 +211,13 @@ function App() {
       pushToast(message || "A server error occurred.");
     };
 
-    // cursor overlay data from other users. not rendering it yet
-    // but receiving it so we can add cursor highlights later.
-    const onCursorUpdate = () => {};
+    const onCursorUpdate = ({ user: cursorUser, cursor }) => {
+      if (!cursorUser?.id || cursorUser.id === user.id) return;
+      setRemoteCursors((prev) => ({
+        ...prev,
+        [cursorUser.id]: { user: cursorUser, cursor },
+      }));
+    };
 
     // IMPORTANT: register listeners BEFORE emitting join_document.
     // learned this the hard way - if the server responds fast enough,
@@ -313,6 +328,7 @@ function App() {
             <Editor
               ydoc={ydoc}
               user={user}
+              remoteCursors={remoteCursors}
               onWordCountChange={setWordCount}
               onUpdate={handleEditorUpdate}
               onYjsSaved={handleYjsSaved}
