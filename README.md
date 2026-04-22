@@ -385,4 +385,4 @@ If I had more time, the first thing I'd tackle is multi-document support and Red
 
 The biggest lesson was about the gap between "this works with one user" and "this works with two users typing at the same time." Most of the subtle bugs lived in that gap. Race conditions in socket event ordering, stale state after reconnection, editor flickering on initial load. None of them show up in a demo with one browser tab.
 
-Built by Kshitij, from Solan, probably while it was raining.
+Built by Kshitij, from Solan, and boy it was fun to build, thank you for this assignment.
