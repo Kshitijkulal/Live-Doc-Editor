@@ -21,6 +21,12 @@ const createUpdate = (value) => {
 beforeAll(async () => {
   await initRedis();
 
+  await prisma.document.deleteMany();
+
+  await prisma.document.create({
+    data: { content: "" },
+  });
+
   server = http.createServer(app);
   io = new Server(server);
 
@@ -28,27 +34,21 @@ beforeAll(async () => {
 
   await new Promise((res) => server.listen(4000, res));
 
-  client1 = new Client("http://localhost:4000");
-  client2 = new Client("http://localhost:4000");
-});
-
-beforeEach(async () => {
-  await prisma.document.deleteMany();
-
-  await prisma.document.create({
-    data: { content: "" },
-  });
-
   await initYDoc();
 
+  client1 = new Client("http://localhost:4000");
+  client2 = new Client("http://localhost:4000");
+}, 30_000);
+
+beforeEach(() => {
   client1.removeAllListeners();
   client2.removeAllListeners();
 });
 
 afterAll(() => {
-  client1.close();
-  client2.close();
-  server.close();
+  client1?.close();
+  client2?.close();
+  server?.close();
 });
 
 describe("Socket Integration (Yjs)", () => {

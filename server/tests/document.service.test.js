@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll } from "vitest";
 import { prisma } from "../src/config/prisma.js";
 import {
   applyUpdate,
@@ -10,7 +10,15 @@ import { initRedis } from "../src/config/redis.js";
 
 beforeAll(async () => {
   await initRedis();
-});
+
+  await prisma.document.deleteMany();
+
+  await prisma.document.create({
+    data: { content: "" },
+  });
+
+  await initYDoc();
+}, 30_000);
 
 const createUpdate = (value) => {
   const doc = new Y.Doc();
@@ -20,16 +28,6 @@ const createUpdate = (value) => {
 };
 
 describe("Document Service (Yjs)", () => {
-  beforeEach(async () => {
-    await prisma.document.deleteMany();
-
-    await prisma.document.create({
-      data: { content: "" },
-    });
-
-    await initYDoc();
-  });
-
   it("should return initial Yjs state", () => {
     const doc = getDocument();
     expect(doc.content).toBeInstanceOf(Array);
@@ -63,6 +61,9 @@ describe("Document Service (Yjs)", () => {
 
   it("should persist to DB", async () => {
     await applyUpdate(createUpdate("persist"), "user1");
+
+    // wait for the 2s debounced persist to fire
+    await new Promise((r) => setTimeout(r, 2500));
 
     const dbDoc = await prisma.document.findFirst();
     expect(dbDoc.content).toBeTruthy();
