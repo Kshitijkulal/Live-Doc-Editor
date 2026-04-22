@@ -15,8 +15,10 @@ let redisSubscribed = false;
 
 let persistTimeout = null;
 let lastUpdatedBy = null;
+let persistInFlight = false;
+let persistDirty = false;
 
-// debounced persist - every keystroke doesn't need a db write.
+// debounced persist, every keystroke doesn't need a db write.
 // 2s feels right, fast enough that you don't lose much on a crash,
 // slow enough that mongo isn't getting hammered on every character.
 const schedulePersist = (updatedBy) => {
@@ -25,6 +27,26 @@ const schedulePersist = (updatedBy) => {
   clearTimeout(persistTimeout);
 
   persistTimeout = setTimeout(async () => {
+    await doPersist();
+  }, 2000);
+};
+
+// only one write at a time. if another update lands while we're
+// mid-write, we just mark it dirty and re-persist after the current
+// one finishes. without this, two writes can hit the same mongo doc
+// at once and you get P2034 deadlocks, clearTimeout can't cancel
+// a doPersist that's already running as an async promise.
+const doPersist = async (retries = 3) => {
+  if (persistInFlight) {
+    // write already running, just flag it so we re-run after
+    persistDirty = true;
+    return;
+  }
+
+  persistInFlight = true;
+  persistDirty = false;
+
+  try {
     const snapshot = Y.encodeStateAsUpdate(ydoc);
 
     await prisma.document.update({
@@ -36,7 +58,35 @@ const schedulePersist = (updatedBy) => {
     });
 
     logger.info("Persisted debounced snapshot");
-  }, 2000);
+  } catch (err) {
+    if (err.code === "P2034" && retries > 0) {
+      // write conflict / deadlock, back off and retry
+      const delay = 250 * (4 - retries);
+      logger.warn(`Write conflict on persist, retrying in ${delay}ms...`);
+      await new Promise((r) => setTimeout(r, delay));
+      persistInFlight = false;
+      return doPersist(retries - 1);
+    }
+
+    if (err.code === "P2025") {
+      // document was deleted between scheduling and firing, nothing to save
+      logger.warn("Document not found during persist, skipping");
+      persistInFlight = false;
+      return;
+    }
+
+    // anything else is unexpected, log it but don't crash the server
+    logger.error(err, "Failed to persist document snapshot");
+  } finally {
+    persistInFlight = false;
+  }
+
+  // new updates came in while we were writing, go again
+  // with the latest snapshot
+  if (persistDirty) {
+    persistDirty = false;
+    await doPersist();
+  }
 };
 
 // loads the doc from mongo and hydrates the in-memory Yjs doc.

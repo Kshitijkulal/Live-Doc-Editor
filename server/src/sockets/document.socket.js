@@ -89,7 +89,7 @@ export const registerDocumentSocket = (io) => {
       });
     });
 
-    // cursor positions - forwarding to peers for the cursor overlay.
+    // cursor positions, forwarding to peers for the cursor overlay.
     // not doing anything fancy with this yet but the plumbing is here.
     socket.on("cursor_update", (cursor) => {
       if (!currentUser) return;
