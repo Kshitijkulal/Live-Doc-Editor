@@ -528,6 +528,10 @@ body,
   font-family: var(--font-sans);
 }
 
+.collaboration-cursor__selection {
+  border-radius: 2px;
+}
+
 /* Highlight extension */
 mark {
   border-radius: 3px;
