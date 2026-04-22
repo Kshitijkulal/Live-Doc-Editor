@@ -246,6 +246,8 @@ function App() {
     const onLocalUpdate = (update, origin) => {
       if (origin === "remote") return;
       socket.emit("yjs_update", Array.from(update));
+      // emit typing only for local keystrokes, not remote applies
+      socket.emit("typing");
     };
 
     ydoc.on("update", onLocalUpdate);
@@ -276,8 +278,7 @@ function App() {
   // debounced status updates - show "typing" immediately,
   // then flip to "saved" after 1.5s of inactivity
   const handleEditorUpdate = useCallback(() => {
-    socket.emit("typing");
-
+    // typing emit is handled in ydoc.on("update") to avoid firing on remote applies
     setStatus("typing");
     clearTimeout(statusTimerRef.current);
     statusTimerRef.current = setTimeout(() => {
